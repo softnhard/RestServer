@@ -15,6 +15,18 @@ class TestController
     }
 
     /**
+     * Returns a JSON string object to the browser when hitting the root of the domain
+     *
+     * @url GET /wargs
+     * 
+     * @param text "sample text" "default_value"
+     */
+    public function testWithArgs($args = null)
+    {
+        return "Args: ".print_r($args);
+    }
+
+    /**
      * Logs in a user with the given username and password POSTed. Though true
      * REST doesn't believe in sessions, it is often desirable for an AJAX server.
      *
