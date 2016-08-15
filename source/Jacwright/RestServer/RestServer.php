@@ -46,7 +46,8 @@ class RestServer
 	public $method;
 	public $params;
 	public $format;
-	public $cacheDir = __DIR__;
+	public $cacheDir = __DIR__.'/temp';
+        public $parentDir;
 	public $realm;
 	public $mode;
 	public $root;
@@ -62,10 +63,11 @@ class RestServer
 	 *
 	 * @param string $mode The mode, either debug or production
 	 */
-	public function  __construct($mode = 'debug', $realm = 'Rest Server')
+	public function  __construct($mode = 'debug', $realm = 'Rest Server', $parentDir = '/')
 	{
 		$this->mode = $mode;
 		$this->realm = $realm;
+		$this->parentDir = $parentDir;
 		// Set the root
 		$dir = str_replace('\\', '/', dirname(str_replace($_SERVER['DOCUMENT_ROOT'], '', $_SERVER['SCRIPT_FILENAME'])));
 		if ($dir == '.') {
@@ -84,6 +86,9 @@ class RestServer
 			if (function_exists('apc_store')) {
 				apc_store('urlMap', $this->map);
 			} else {
+                                if (!file_exists($this->cacheDir)) {
+                                    mkdir($this->cacheDir, 0777, true);
+                                }
 				file_put_contents($this->cacheDir . '/urlMap.cache', serialize($this->map));
 			}
 		}
@@ -146,6 +151,8 @@ class RestServer
 				}
 			} catch (RestException $e) {
 				$this->handleError($e->getCode(), $e->getMessage());
+			}catch(Exception $e){
+                            $this->handleError(400, $e->getMessage());
 			}
 
 		} else {
@@ -244,9 +251,35 @@ class RestServer
 			}
 		}
 	}
+	
+        private function initCallArgsByRequestParams($call){
+            $Args = array();
+            if(is_array($call[5])){
+                foreach($call[5] as $key => $value){
+                    if(isset($_REQUEST[$key]))
+                        $Args[$key] = $_REQUEST[$key];
+                    else
+                        $Args[$key] = $value['default'];
+                }
+            }
+            foreach($_REQUEST as $key => $value){
+                if (isset($Args[$key]) == false)
+                    $Args[$key] = $value;
+            }
+            return $Args;
+        }
+        
+        private function endsWith($haystack, $needle) {
+            // search forward starting from end minus needle length characters
+            return $needle === "" || (($temp = strlen($haystack) - strlen($needle)) >= 0 && strpos($haystack, $needle, $temp) !== false);
+        }
 
 	protected function findUrl()
 	{
+                $this->url = substr($this->url, strpos($this->url, $this->parentDir) + strlen($this->parentDir));
+                if ($this->endsWith($this->url, '/'))
+                    $this->url = substr($this->url, 0, strlen($this->url) - 1);
+
 		$urls = $this->map[$this->method];
 		if (!$urls) return null;
 
@@ -258,10 +291,15 @@ class RestServer
 					if (isset($args['data'])) {
 						$params = array_fill(0, $args['data'] + 1, null);
 						$params[$args['data']] = $this->data;   //@todo data is not a property of this class
-						$call[2] = $params;
-					} else {
-						$call[2] = array();
-					}
+	                                        if (isset($args['args']))
+	                                            $call[2] = array($params, $this->initCallArgsByRequestParams($call));
+	                                        else
+	                                            $call[2] = $params;
+	                                } elseif (isset($args['args'])) {
+	                                    $call[2] = array($this->initCallArgsByRequestParams($call));
+	                                } else {
+	                                    $call[2] = array();
+	                                }
 					return $call;
 				}
 			} else {
@@ -274,6 +312,11 @@ class RestServer
 						$params[$args['data']] = $this->data;
 					}
 
+                                        if(isset($args['args'])){
+	                                        $params[$args['args']] = $this->initCallArgsByRequestParams($call);
+                                        }
+
+                                        $paramMap['args'] =  $params[$args['args']];
 					foreach ($matches as $arg => $match) {
 						if (is_numeric($arg)) continue;
 						$paramMap[$arg] = $match;
@@ -313,6 +356,15 @@ class RestServer
 		foreach ($methods as $method) {
 			$doc = $method->getDocComment();
 			$noAuth = strpos($doc, '@noAuth') !== false;
+			$Params = null;
+                        if(preg_match_all('/@param\s+(\w+)\s+(["\'])((?:.*?(\\\2)?)*)\2\s+(?:(["\'])((?:.*?(\\\2)?)*)\2|([^"\'\s]+))/s', $doc, $matches, PREG_SET_ORDER)){
+                            foreach ($matches as $match) {
+                                $ParamInfo['help'] = $match[3];
+                                $ParamInfo['default'] = ($match[6] == '' ? (sizeof($match) >= 8 ? $match[8] : '') : $match[6]);
+                                $Params[$match[1]] = $ParamInfo;
+                            }
+                        }
+
 			if (preg_match_all('/@url[ \t]+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)[ \t]+\/?(\S*)/s', $doc, $matches, PREG_SET_ORDER)) {
 
 				$params = $method->getParameters();
@@ -331,6 +383,7 @@ class RestServer
 					$call[] = $args;
 					$call[] = null;
 					$call[] = $noAuth;
+                                        $call[] = $Params;
 
 					$this->map[$httpMethod][$url] = $call;
 				}
